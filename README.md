@@ -86,10 +86,10 @@ Environment="PYTHONUNBUFFERED=1"  # Чтобы логи были сразу ви
 [Install]
 WantedBy=multi-user.target  # Запускать при загрузке системы
 ```
-```sudo systemctl daemon-reload``` - перезагружаем службу чтоб увидело новый файл
-```sudo systemctl enable telegram_bot.service``` - включаем загрузку при старте (автозапуск)
-```sudo systemctl start telegram_bot.service``` - запускаем бота в реальном времени
-```sudo systemctl status telegram_bot.service``` - проверяем статус
-```sudo systemctl stop telegram_bot.service``` - чтобы остановить, мало ли понадобится.
+```sudo systemctl daemon-reload``` - перезагружаем службу чтоб увидело новый файл <br>
+```sudo systemctl enable telegram_bot.service``` - включаем загрузку при старте (автозапуск)<br>
+```sudo systemctl start telegram_bot.service``` - запускаем бота в реальном времени<br>
+```sudo systemctl status telegram_bot.service``` - проверяем статус<br>
+```sudo systemctl stop telegram_bot.service``` - чтобы остановить, мало ли понадобится.<br>
 
 <p>Вот в целом и все, теперь бот крутится на сервере сам, даже после закрытия терминала. Легко проверить командой /now.</p>
