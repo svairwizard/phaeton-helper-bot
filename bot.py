@@ -1,179 +1,198 @@
-import os
-from datetime import datetime, timedelta
 import requests
-from dotenv import load_dotenv
-from telegram import Bot, Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from datetime import datetime, timedelta, time
+from xml.etree import ElementTree
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
 import logging
+from bs4 import BeautifulSoup
+import pytz
 
-# указываем токены
-TELEGRAM_TOKEN = 'ваш_тг_токен'
-ALPHAVANTAGE_API_KEY = 'ваш_токен_альфы'
+#logs
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        filename='bot.log',
+        level=logging.INFO,
+        format='%(asctime)s %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
-# логгирование
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+TELEGRAM_TOKEN = 'token' 
+ALPHAVANTAGE_API_KEY = 'token' 
+CHAT_ID = your_id #ваш ID в тг
 
-def get_weather() -> str:
-    """Получает погоду в Москве через Open-Meteo API"""
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        'latitude': 55.7558,
-        'longitude': 37.6176,
-        'hourly': 'temperature_2m,precipitation_probability',
-        'forecast_days': 1,
-        'timezone': 'Europe/Moscow'
-    }
+#cbr
+def get_cbr_key_rate() -> dict:
+    today = datetime.now().strftime('%Y-%m-%d')
+    result = {'key_rate': None, 'date': today}
     
     try:
-        response = requests.get(url, params=params)
+        url = 'https://www.cbr.ru/hd_base/keyrate/'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        rate_table = soup.find('table', {'class': 'data'})
+        
+        if rate_table:
+            last_row = rate_table.find_all('tr')[-1]
+            result['key_rate'] = last_row.find_all('td')[1].text.strip()
+    except Exception as e:
+        result['error'] = f"Ошибка получения ключевой ставки: {str(e)}"
+    
+    return result
+
+#weather
+def get_weather() -> str:
+    try:
+        url = "https://api.open-meteo.com/v1/forecast"
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        params = {
+            "latitude": 55.7558,
+            "longitude": 37.6176,
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "timezone": "Europe/Moscow",
+            "start_date": today,
+            "end_date": today
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        hourly = data['hourly']
-        times = hourly['time']
-        temps = hourly['temperature_2m']
-        precip = hourly['precipitation_probability']
+        max_temp = data["daily"]["temperature_2m_max"][0]
+        min_temp = data["daily"]["temperature_2m_min"][0]
+        prob = data["daily"]["precipitation_probability_max"][0]
         
-        temp = temps[7]
-        prob = precip[7]
-        
-        return f"Приветствую 👋\n📍Погода в Москве:\n 🌡️Температура: {temp}°C\n ☔️Вероятность осадков: {prob}%"
+        return (
+            f"Сводка на {today}\n"
+            f"🌤️ Погода в Москве:\n"
+            f"• 🌡️: от {min_temp}°C до {max_temp}°C\n"
+            f"• ☔️ Вероятность осадков: {prob}%"
+        )
     except Exception as e:
-        logger.error(f"Ошибка при получении погоды: {e}")
-        return "Не удалось получить данные о погоде"
+        return f"❌ Ошибка получения погоды: {str(e)}"
 
-def get_usd_rate() -> str:
-    """Получает курс доллара от ЦБ РФ"""
-    today = datetime.now().strftime('%d/%m/%Y')
-    yesterday = (datetime.now() - timedelta(days=2)).strftime('%d/%m/%Y')
-    
+#USD
+async def get_usd_rate() -> str:
     try:
-        # Сегодняшний курс
-        today_url = f"https://www.cbr.ru/scripts/XML_daily.asp?date_req={today}"
-        response = requests.get(today_url)
-        today_rate = parse_usd_rate(response.text)
+        today = datetime.now().strftime('%d/%m/%Y')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%d/%m/%Y')
         
-        # Вчерашний курс
-        yesterday_url = f"https://www.cbr.ru/scripts/XML_daily.asp?date_req={yesterday}"
-        response = requests.get(yesterday_url)
-        yesterday_rate = parse_usd_rate(response.text)
+        today_response = requests.get(
+            f"https://www.cbr.ru/scripts/XML_daily.asp?date_req={today}",
+            timeout=10
+        )
+        today_rate = parse_usd_rate(today_response.text)
+        
+        yesterday_response = requests.get(
+            f"https://www.cbr.ru/scripts/XML_daily.asp?date_req={yesterday}",
+            timeout=10
+        )
+        yesterday_rate = parse_usd_rate(yesterday_response.text)
         
         change = today_rate - yesterday_rate
         trend = "↑" if change >= 0 else "↓"
         
-        return (f"💲Курс USD ЦБ РФ:\n"
-                f"Сегодня: {today_rate:.2f} руб.\n"
-                f"Вчера: {yesterday_rate:.2f} руб.\n"
-                f"Изменение: {trend} {abs(change):.2f} руб.")
+        return (
+            f"💲 Курс USD ЦБ РФ:\n"
+            f"• ❇️ Сегодня: {today_rate:.2f} руб.\n"
+            f"• 📊 Изменение: {trend} {abs(change):.2f} руб."
+        )
     except Exception as e:
-        logger.error(f"Ошибка при получении курса USD: {e}")
-        return "Не удалось получить курс USD"
+        return f"❌ Ошибка получения курса USD: {str(e)}"
 
 def parse_usd_rate(xml_data: str) -> float:
-    """Парсит XML от ЦБ РФ для получения курса USD"""
-    from xml.etree import ElementTree
-    
     root = ElementTree.fromstring(xml_data)
     for valute in root.findall('Valute'):
         if valute.find('CharCode').text == 'USD':
             return float(valute.find('Value').text.replace(',', '.'))
     return 0.0
 
-def get_brent_oil() -> str:
-    """Получает курс нефти Brent через Alpha Vantage API"""
+#NEFT
+async def get_brent_price() -> str:
     try:
-        url = "https://www.alphavantage.co/query"
-        params = {
-            'function': 'BRENT',
-            'interval': 'daily',
-            'apikey': ALPHAVANTAGE_API_KEY
-        }
-        
-        response = requests.get(url, params=params)
+        response = requests.get(
+            "https://www.alphavantage.co/query",
+            params={
+                'function': 'BRENT',
+                'interval': 'daily',
+                'apikey': ALPHAVANTAGE_API_KEY
+            },
+            timeout=10
+        )
         data = response.json()
         
-        # Получаем последние 2 записи (сегодня и вчера)
-        last_two = data['data'][:2]
-        today = last_two[0]
-        yesterday = last_two[1]
-        
+        if 'data' not in data:
+            return "❌ Не удалось получить данные о нефти"
+            
+        today = data['data'][0]
+        yesterday = data['data'][1]
         change = float(today['value']) - float(yesterday['value'])
         trend = "↑" if change >= 0 else "↓"
         
-        return (f"🛢 Цена нефти Brent:\n"
-                f"Сегодня: {today['value']} USD/баррель\n"
-                f"Вчера: {yesterday['value']} USD/баррель\n"
-                f"Изменение: {trend} {abs(change):.2f} USD")
+        return (
+            f"🛢 Нефть Brent:\n"
+            f"• ❇️ Сегодня: {today['value']} USD/барр.\n"
+            f"• 📊 Изменение: {trend} {abs(change):.2f} USD"
+        )
     except Exception as e:
-        logger.error(f"Ошибка при получении цены на нефть: {e}")
-        return "Не удалось получить цену на нефть Brent"
+        return f"❌ Ошибка получения цены на нефть: {str(e)}"
 
-def send_daily_update(context: CallbackContext) -> None:
-    """Отправляет ежедневное обновление в 7 утра"""
-    chat_id = context.job.context
-    message = format_message()
-    context.bot.send_message(chat_id=chat_id, text=message)
-
-def format_message() -> str:
-    """Форматирует все данные в одно сообщение"""
+#result message
+async def generate_daily_summary() -> str:
     weather = get_weather()
-    usd = get_usd_rate()
-    oil = get_brent_oil()
+    usd_rate = await get_usd_rate()
+    brent_price = await get_brent_price()
+    cbr_data = get_cbr_key_rate()
     
-    return f"{weather}\n\n{usd}\n\n{oil}"
-
-def start(update: Update, context: CallbackContext) -> None:
-    """Обработчик команды /start"""
-    user = update.effective_user
-    update.message.reply_text(f"Привет {user.first_name}! Вас приветствует Фаэтон!\n"
-                             "Используй /now для актуальной информации.")
-
-def now(update: Update, context: CallbackContext) -> None:
-    """Обработчик команды /now"""
-    message = format_message()
-    update.message.reply_text(message)
-
-def setup_job_queue(update: Update, context: CallbackContext) -> None:
-    """Настраивает ежедневную отправку в 7 утра"""
-    chat_id = update.message.chat_id
-    
-    # Удаляем старые задания для этого чата
-    current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
-    for job in current_jobs:
-        job.schedule_removal()
-    
-    # Добавляем новое задание
-    context.job_queue.run_daily(
-        send_daily_update,
-        time=datetime.strptime('07:00', '%H:%M').time(),
-        days=(0, 1, 2, 3, 4, 5, 6),
-        context=chat_id,
-        name=str(chat_id)
+    return (
+        f"{weather}\n\n"
+        f"{usd_rate}\n\n"
+        f"{brent_price}\n\n"
+        f"🏦 Ключевая ставка ЦБ РФ: {cbr_data.get('key_rate', 'Н/Д')}%"
     )
-    
-    update.message.reply_text("Ежедневные обновления настроены на 7:00 утра!")
 
-def error_handler(update: Update, context: CallbackContext) -> None:
-    """Логирует ошибки"""
-    logger.error(msg="Исключение при обработке команды:", exc_info=context.error)
+#/now
+async def now_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        message = await update.message.reply_text("⌛ Запрашиваю актуальные данные...")
+        result_message = await generate_daily_summary()
+        
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=message.message_id,
+            text=result_message
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Произошла ошибка: {str(e)}")
+
+#dailу sent
+async def send_daily_message(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = await generate_daily_summary()
+        await context.bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        logging.error(f"Ошибка при отправке ежедневного сообщения: {str(e)}")
 
 def main() -> None:
-    """Запуск бота"""
-    updater = Updater(TELEGRAM_TOKEN)
-    dp = updater.dispatcher
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Обработчики команд
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("now", now))
-    dp.add_handler(CommandHandler("setup", setup_job_queue))
+    application.add_handler(CommandHandler("now", now_command))
     
-    # Обработчик ошибок
-    dp.add_error_handler(error_handler)
+    # 7AM
+    moscow_tz = pytz.timezone("Europe/Moscow")
+    time_moscow = time(hour=7, minute=0, tzinfo=moscow_tz)
+    job_queue = application.job_queue
+    job_queue.run_daily(
+        send_daily_message,
+        time=time_moscow,
+        days=(0, 1, 2, 3, 4, 5, 6),
+    )
     
-    # Запуск бота
-    updater.start_polling()
-    logger.info("Бот запущен...")
-    updater.idle()
+    print("стартуем....")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
